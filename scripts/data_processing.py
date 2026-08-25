@@ -4,15 +4,21 @@ Data Processing Pipeline
 This script processes raw movie data and creates clean, analysis-ready datasets.
 """
 
-import pandas as pd
-import numpy as np
 import os
-from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+RAW_DIR = ROOT / "data" / "raw"
+PROCESSED_DIR = ROOT / "data" / "processed"
+
 
 def load_raw_data():
     """Load raw datasets"""
-    movies = pd.read_csv('../data/raw/movies_raw.csv')
-    sales = pd.read_csv('../data/raw/daily_sales_raw.csv')
+    movies = pd.read_csv(RAW_DIR / "movies_raw.csv")
+    sales = pd.read_csv(RAW_DIR / "daily_sales_raw.csv")
     return movies, sales
 
 def clean_movies_data(movies_df):
@@ -117,16 +123,11 @@ def main():
     print("Creating aggregated datasets...")
     aggregated = create_aggregated_datasets(movies_clean, sales_clean)
     
-    # Create processed directory
-    os.makedirs('../data/processed', exist_ok=True)
-    
-    # Save processed data
-    movies_clean.to_csv('../data/processed/movies_processed.csv', index=False)
-    sales_clean.to_csv('../data/processed/sales_processed.csv', index=False)
-    
-    # Save aggregated datasets
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    movies_clean.to_csv(PROCESSED_DIR / "movies_processed.csv", index=False)
+    sales_clean.to_csv(PROCESSED_DIR / "sales_processed.csv", index=False)
     for name, df in aggregated.items():
-        df.to_csv(f'../data/processed/{name}.csv', index=False)
+        df.to_csv(PROCESSED_DIR / f"{name}.csv", index=False)
     
     print("\n=== Processing Complete ===")
     print(f"Processed {len(movies_clean)} movies")

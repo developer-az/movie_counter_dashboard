@@ -45,6 +45,10 @@ def test_data_integrity():
     assert not movies['movie_id'].duplicated().any(), "Duplicate movie IDs found"
     assert not movies['total_gross'].isnull().any(), "Null values in total_gross"
     assert (movies['total_gross'] >= 0).all(), "Negative gross values found"
+    known = movies['title'].astype(str).str.contains(
+        r'Avatar|Titanic|Jurassic|Star Wars|The Dark Knight|Zootopia', case=False, regex=True
+    )
+    assert known.any(), "Catalog should contain recognizable published titles, not synthetic names"
     
     print("✅ Data integrity checks passed")
 

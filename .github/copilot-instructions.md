@@ -76,8 +76,8 @@ curl -s -I http://localhost:8501 | head -1
 **CRITICAL**: After code changes, ALWAYS manually verify:
 
 1. **Dashboard Loads**: Navigate to `http://localhost:8501` and verify the page loads without errors
-2. **Data Displays**: Check that all 6 views (Overview, Genres, Studios, Trends, Sales, Explorer) show data
-3. **Interactivity Works**: Switch views (only one renders), then change filters and confirm charts and KPIs update
+2. **Data Displays**: Check that all 6 tabs (Overview, Genre Analysis, Studio Performance, Trends, Sales Data, Catalog) show data
+3. **Interactivity Works**: Change filters and confirm charts and KPIs update; search a real title such as Avatar
 4. **No Errors**: Check browser console and terminal for any error messages
 
 ## Build and Test Commands
@@ -193,21 +193,21 @@ python3 -c "from scripts import generate_data, data_processing"
 
 ## Application Features
 
-The dashboard provides 6 main views (only the active view is rendered):
+The dashboard provides 6 tabs:
 
-1. **Overview**: KPI deltas, budget vs box office (WebGL), ROI distribution, lead titles
-2. **Genres**: Treemap, ROI spread, live genre ledger
-3. **Studios**: Rankings, volume vs yield, live studio ledger
-4. **Trends**: Release and revenue by year
-5. **Sales**: Auto-rolled time series, weekend effect (scoped to filtered titles)
-6. **Explorer**: Sortable table + CSV export
+1. **Overview**: KPIs, budget vs box office (break-even line), ROI distribution, top 10 tables
+2. **Genre Analysis**: Pie chart, average revenue, ROI spread, live genre table
+3. **Studio Performance**: Rankings, volume vs yield, live studio table
+4. **Trends Analysis**: Release patterns and ratings over time
+5. **Sales Analysis**: Modeled theatrical ticket runs scaled to domestic gross
+6. **Catalog**: Sortable filtered table + CSV export
 
 ### Sample Data Characteristics
-- **500 movies** across 10 genres (Action, Comedy, Drama, etc.)
-- **~7,000 daily sales records** covering 365 days
-- **Multiple studios** with realistic budget/revenue distributions
-- **IMDb ratings** from 1-10 with genre-based variations
-- **Financial metrics** including ROI, profit calculations
+- **~3,400 published titles** (The Numbers extract + household-name fills)
+- **~5,600 daily sales rows** for the 100 highest domestic-gross films (8-week theatrical model)
+- **Genres**: Action, Adventure, Comedy, Drama, Horror (source taxonomy)
+- **IMDb ratings** joined from a public extract (~85% coverage)
+- **Financial metrics** including ROI and profit from reported budget vs worldwide gross
 
 ## Quick Reference Commands
 

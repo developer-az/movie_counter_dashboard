@@ -187,10 +187,10 @@ def test_charts_render_empty_and_populated():
     movies = _catalog()
     fig, note = charts.budget_vs_gross(movies, max_points=50)
     assert isinstance(fig, go.Figure)
-    assert note is None
+    assert note is not None
 
     stats = compute_genre_stats(movies)
-    assert isinstance(charts.genre_revenue_treemap(stats), go.Figure)
+    assert isinstance(charts.genre_pie(movies), go.Figure)
     assert isinstance(charts.roi_distribution(movies), go.Figure)
     assert isinstance(charts.studio_revenue_bar(compute_studio_stats(movies)), go.Figure)
     print("✅ Chart builders return Plotly figures for empty and populated frames")

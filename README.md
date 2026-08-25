@@ -22,16 +22,16 @@ This project transforms movie industry data into actionable insights through adv
 - **⚡ Programmatic Access**: Shared analytics core for custom applications
 
 ### Data Analytics
-- **500+ Movies**: Comprehensive dataset with budget, revenue, ratings, and metadata
+- **3,400+ published titles**: The Numbers box office extract plus household-name fills, with budget, revenue, ratings, and metadata
 - **Time Series Analysis**: Daily sales tracking and seasonal patterns
 - **Genre & Studio Analysis**: Performance metrics across categories
 - **ROI Calculations**: Financial performance and profitability analysis
 
 ### Interactive Dashboard
-- **Production workspace**: Dark professional theme, KPI deltas vs the prior window, and a single active view so unused charts are not computed
-- **Filters that scale**: Title search, release window, genre / studio / MPAA, budget and IMDb sliders, plus a compact studio picker when the catalog is large
-- **Large-data charting**: WebGL scatter traces, stratified/stride sampling above 4,000 points, and automatic day→week→month rollups for long sales series
-- **Live ledgers**: Genre and studio tables are aggregated from the current slice (not static CSVs), with an Explorer view for sort / scan / CSV export
+- **Original analysis tabs**: Overview, Genre Analysis, Studio Performance, Trends, Sales Data, plus a searchable Catalog
+- **Recognizable films**: Published box office (The Numbers) plus household-name fills (Avatar, Titanic, The Dark Knight, Endgame, …)
+- **Filters**: Title search, release window, genre, optional studio, budget range
+- **Useful chart overlays**: Break-even line, 0% ROI marker, log-scale scatter, live tables from the filtered slice
 
 ### Technical Features
 - **Automated Data Pipeline**: Scripts for data generation and processing
@@ -48,6 +48,8 @@ movie_counter_project/
 │   └── core.py                # Reusable analytics functions
 ├── data/                      # Data storage
 │   ├── raw/                   # Raw datasets
+│   │   ├── movie_profit.csv           # The Numbers / TidyTuesday extract
+│   │   ├── imdb_movie_metadata.csv    # Public IMDb scores + runtimes
 │   │   ├── movies_raw.csv
 │   │   └── daily_sales_raw.csv
 │   └── processed/             # Cleaned and processed data
@@ -312,31 +314,34 @@ After installation, verify everything works:
 
 ## 📈 Dashboard Features
 
-The dashboard is a single-page workspace (`dashboard/streamlit_app.py`). Filters in the sidebar apply everywhere; a horizontal view switcher renders **only the active view**.
+The dashboard is a single-page workspace (`dashboard/streamlit_app.py`) with the original five analysis tabs plus a searchable catalog. Sidebar filters apply to every tab.
 
 ### Overview
-- **KPI row**: Titles, box office, IMDb, profitable share, average ROI, with deltas vs the previous window of equal length
-- **Budget vs box office**: WebGL scatter, sampled when the slice is large
-- **ROI distribution** with a median marker
-- **Lead titles**: Top box office and top ROI tables
+- **KPI row**: Titles, worldwide box office, average IMDb, profitable share, **median ROI**
+- **Budget vs box office** (log scale) with a break-even line
+- **ROI distribution** with 0% and median markers
+- **Top 10** by worldwide gross and by ROI
 
-### Genres
-- **Treemap** of box office share, **ROI box plot**, average yield and ratings
-- **Genre ledger** computed from the filtered catalog
+### Genre Analysis
+- **Pie chart** of title counts by genre
+- **Average box office** by genre
+- **ROI spread** (box plot) plus a detailed genre table computed from the current filters
 
-### Studios
-- Ranked box office bars, volume vs average yield, and a studio ledger
+### Studio Performance
+- Ranked box office bars (top 15)
+- Volume vs average yield scatter
+- Studio statistics table
 
 ### Trends
-- Titles and average box office by year, plus ratings over time (size = budget)
+- Titles and average box office by year
+- IMDb vs year, sized by budget
 
-### Sales
-- Ticket and revenue series that auto-roll from day to week/month/quarter
-- Weekend vs weekday effect
-- Restricted to titles in the current movie slice
+### Sales Data
+- Daily tickets and revenue, weekend vs weekday, top 15 by tickets
+- Built from an 8-week theatrical model scaled to each film's **reported domestic gross** (top 100 domestic titles)
 
-### Explorer
-- Sortable full table of the slice, IMDb progress column, CSV download
+### Catalog
+- Sortable table of the filtered slice and CSV download
 
 ## 💻 Terminal Interface Features (New!)
 
@@ -376,11 +381,14 @@ python3 movie_analytics_terminal.py --export csv --output metrics.csv
 ## 🔍 Data Insights
 
 ### Key Findings
-- **Fantasy** genre shows highest profitability on average
-- **Action** movies receive highest average IMDb ratings
-- **Warner Bros** is the most active studio by movie count
-- Weekend sales are approximately **50%** higher than weekday sales
-- **68%** of movies in the dataset are profitable
+Figures below are from the published catalog (The Numbers extract plus household-name fills), not the old synthetic titles.
+
+- **Adventure** leads total and average profitability in this slice
+- **Drama** has the highest average IMDb score
+- **Warner Bros** is the most active studio by title count
+- Modeled weekend ticket demand is about **55%** above weekdays (Friday/weekend weights in the theatrical curve)
+- About **68%** of titles recoup their production budget at the worldwide box office
+- **Median ROI** is the headline profitability KPI; the mean is pulled up by a few micro-budget breakouts
 
 ### Business Intelligence
 - Budget allocation strategies by genre performance
@@ -435,10 +443,11 @@ python3 movie_analytics_terminal.py --export csv --output metrics.csv
 ## 🧪 Development
 
 ### Data Generation
-The project includes synthetic data generation that creates realistic movie industry datasets:
-- **Realistic Distributions**: Log-normal budget distributions, genre-based adjustments
-- **Temporal Patterns**: Release date trends, seasonal variations
-- **Market Dynamics**: Studio influences, rating correlations
+The catalog is built from published financials (`scripts/generate_data.py`):
+- **The Numbers** extract (TidyTuesday `movie_profit.csv`) for budget, domestic/worldwide gross, studio, MPAA, genre, and release date
+- **IMDb 5000** public extract for scores and runtimes, plus published scores for titles that extract misses
+- **Household-name fills** (Avatar, Titanic, The Dark Knight, Endgame, …) when the extract omits a widely reported film
+- **Theatrical ticket model**: 8-week decay curve for the 100 highest domestic-gross titles, scaled so each run sums to reported domestic gross
 
 ### Recent Fixes and Improvements
 
