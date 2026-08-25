@@ -1,421 +1,603 @@
 """
-Movie Analytics Dashboard
+Movie Industry Analytics — production dashboard.
 
-An interactive dashboard for exploring movie industry data, trends, and insights.
-Built with Streamlit for professional data visualization and analysis.
+A single-page, filter-driven workspace. Only the active view is rendered so
+aggregations and Plotly traces stay bounded as the catalog grows. Shared
+analytics live in ``analytics.core``; this module is presentation.
 """
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import altair as alt
-from datetime import datetime, timedelta
+from __future__ import annotations
 
-# Page configuration
-st.set_page_config(
-    page_title="Movie Analytics Dashboard",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DASHBOARD_DIR = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+
+import pandas as pd
+import streamlit as st
+
+import charts
+from analytics.core import (
+    MAX_LINE_POINTS,
+    MAX_SCATTER_POINTS,
+    MAX_SCATTER_POINTS_FAST,
+    MovieAnalytics,
+    auto_resample_timeseries,
+    compute_genre_stats,
+    compute_overview_metrics,
+    compute_studio_stats,
+    filter_movies,
+    filter_sales,
+    frame_memory_bytes,
+    normalize_date_range,
+    previous_period_bounds,
+    unique_sorted,
 )
 
-# Custom CSS for better styling
-st.markdown("""
+st.set_page_config(
+    page_title="Box Office Intelligence",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+VIEWS = ("Overview", "Genres", "Studios", "Trends", "Sales", "Explorer")
+STUDIO_COMPACT_THRESHOLD = 40
+APP_CSS = """
 <style>
-.metric-card {
-    background-color: #f0f2f6;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    border-left: 5px solid #ff6b6b;
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+html, body, [class*="css"], .stApp {
+    font-family: "IBM Plex Sans", Inter, system-ui, sans-serif;
 }
-.stTabs [data-baseweb="tab-list"] {
-    gap: 2px;
+.block-container {
+    padding-top: 1.15rem;
+    padding-bottom: 2.4rem;
+    max-width: 1440px;
 }
-.stTabs [data-baseweb="tab"] {
-    height: 50px;
-    padding-left: 20px;
-    padding-right: 20px;
+div[data-testid="stSidebar"] {
+    border-right: 1px solid rgba(255,255,255,0.06);
 }
+div[data-testid="stSidebar"] h1, div[data-testid="stSidebar"] h2, div[data-testid="stSidebar"] h3 {
+    letter-spacing: 0.02em;
+}
+[data-testid="stMetric"] {
+    background: linear-gradient(180deg, rgba(28,38,51,0.95), rgba(16,22,31,0.92));
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 14px 16px 10px 16px;
+}
+[data-testid="stMetricLabel"] {
+    color: #8B9BB0 !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+[data-testid="stMetricValue"] {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-weight: 500;
+    font-size: 1.55rem;
+}
+.hero-kicker {
+    color: #F5C542;
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+.hero-title {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: #F4F7FB;
+    margin: 0 0 0.25rem 0;
+    line-height: 1.2;
+}
+.hero-sub {
+    color: #8B9BB0;
+    font-size: 0.95rem;
+    margin-bottom: 0.4rem;
+}
+.insight-banner {
+    background: rgba(245, 197, 66, 0.08);
+    border: 1px solid rgba(245, 197, 66, 0.22);
+    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    color: #E8EEF6;
+    font-size: 0.92rem;
+    margin: 0.4rem 0 0.8rem 0;
+}
+.empty-panel {
+    border: 1px dashed rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 2.4rem 1.5rem;
+    text-align: center;
+    color: #8B9BB0;
+}
+.footer-meta {
+    color: #6B7C90;
+    font-size: 0.8rem;
+    margin-top: 1.4rem;
+}
+hr { border-color: rgba(255,255,255,0.08); }
 </style>
-""", unsafe_allow_html=True)
+"""
 
-@st.cache_data
-def load_data():
-    """Load all datasets with caching for performance"""
-    try:
-        movies = pd.read_csv('../data/processed/movies_processed.csv')
-        sales = pd.read_csv('../data/processed/sales_processed.csv')
-        genre_stats = pd.read_csv('../data/processed/genre_stats.csv')
-        studio_stats = pd.read_csv('../data/processed/studio_stats.csv')
-        monthly_sales = pd.read_csv('../data/processed/monthly_sales.csv')
-        
-        # Convert date columns
-        movies['release_date'] = pd.to_datetime(movies['release_date'])
-        sales['date'] = pd.to_datetime(sales['date'])
-        
-        return movies, sales, genre_stats, studio_stats, monthly_sales
-    except FileNotFoundError:
-        # Try alternative path for deployment
-        try:
-            movies = pd.read_csv('data/processed/movies_processed.csv')
-            sales = pd.read_csv('data/processed/sales_processed.csv')
-            genre_stats = pd.read_csv('data/processed/genre_stats.csv')
-            studio_stats = pd.read_csv('data/processed/studio_stats.csv')
-            monthly_sales = pd.read_csv('data/processed/monthly_sales.csv')
-            
-            # Convert date columns
-            movies['release_date'] = pd.to_datetime(movies['release_date'])
-            sales['date'] = pd.to_datetime(sales['date'])
-            
-            return movies, sales, genre_stats, studio_stats, monthly_sales
-        except FileNotFoundError:
-            st.error("Data files not found. Please ensure data files are included in the repository.")
-            return None, None, None, None, None
 
-def main():
-    """Main dashboard application"""
-    
-    # Load data
-    movies, sales, genre_stats, studio_stats, monthly_sales = load_data()
-    
-    if movies is None:
-        st.stop()
-    
-    # Header
-    st.title("🎬 Movie Industry Analytics Dashboard")
-    st.markdown("---")
-    
-    # Sidebar filters
-    st.sidebar.header("🔍 Filters")
-    
-    # Date range filter
-    date_range = st.sidebar.date_input(
-        "Select Date Range",
-        value=(movies['release_date'].min(), movies['release_date'].max()),
-        min_value=movies['release_date'].min(),
-        max_value=movies['release_date'].max()
+def fmt_money(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    amount = float(value)
+    magnitude = abs(amount)
+    if magnitude >= 1_000_000_000:
+        return f"${amount / 1_000_000_000:.2f}B"
+    if magnitude >= 1_000_000:
+        return f"${amount / 1_000_000:.1f}M"
+    if magnitude >= 1_000:
+        return f"${amount / 1_000:.0f}K"
+    return f"${amount:,.0f}"
+
+
+def fmt_number(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):,.0f}"
+
+
+def fmt_pct(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):.1f}%"
+
+
+def fmt_rating(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):.1f}"
+
+
+def delta_pct(current: float | None, previous: float | None) -> str | None:
+    if current is None or previous in (None, 0) or pd.isna(previous):
+        return None
+    change = (float(current) - float(previous)) / abs(float(previous)) * 100.0
+    return f"{change:+.1f}%"
+
+
+def memory_label(nbytes: int) -> str:
+    if nbytes >= 1_000_000:
+        return f"{nbytes / 1_000_000:.1f} MB"
+    if nbytes >= 1_000:
+        return f"{nbytes / 1_000:.0f} KB"
+    return f"{nbytes} B"
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_catalog() -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    engine = MovieAnalytics()
+    if not engine.load_data():
+        return None, None
+    return engine.movies, engine.sales
+
+
+def render_empty(message: str) -> None:
+    st.markdown(f'<div class="empty-panel">{message}</div>', unsafe_allow_html=True)
+
+
+def plot(fig, key: str) -> None:
+    st.plotly_chart(fig, use_container_width=True, config=charts.PLOT_CONFIG, key=key)
+
+
+def render_overview(movies: pd.DataFrame, scatter_cap: int) -> None:
+    genre_stats = compute_genre_stats(movies)
+    left, right = st.columns(2)
+    fig, note = charts.budget_vs_gross(movies, max_points=scatter_cap)
+    with left:
+        plot(fig, "ov-scatter")
+        if note:
+            st.caption(note)
+    with right:
+        plot(charts.roi_distribution(movies), "ov-roi")
+
+    st.subheader("Lead titles")
+    t1, t2 = st.columns(2)
+    top_gross = movies.nlargest(10, "total_gross")[["title", "genre", "studio", "total_gross", "imdb_rating"]]
+    top_roi = movies.nlargest(10, "roi")[["title", "genre", "studio", "roi", "budget"]]
+    with t1:
+        st.caption("Highest box office")
+        st.dataframe(
+            top_gross,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "title": st.column_config.TextColumn("Title"),
+                "genre": "Genre",
+                "studio": "Studio",
+                "total_gross": st.column_config.NumberColumn("Box office", format="$%d"),
+                "imdb_rating": st.column_config.NumberColumn("IMDb", format="%.1f"),
+            },
+        )
+    with t2:
+        st.caption("Highest ROI")
+        st.dataframe(
+            top_roi,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "title": st.column_config.TextColumn("Title"),
+                "genre": "Genre",
+                "studio": "Studio",
+                "roi": st.column_config.NumberColumn("ROI", format="%.1f%%"),
+                "budget": st.column_config.NumberColumn("Budget", format="$%d"),
+            },
+        )
+
+    if not genre_stats.empty:
+        lead = genre_stats.iloc[0]
+        st.markdown(
+            f'<div class="insight-banner"><strong>Read:</strong> {lead["genre"]} leads this slice '
+            f"with {fmt_money(lead['total_gross'])} in box office across {int(lead['movie_count'])} titles "
+            f"(avg ROI {fmt_pct(lead['avg_roi'])}).</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def render_genres(movies: pd.DataFrame) -> None:
+    stats = compute_genre_stats(movies)
+    if stats.empty:
+        render_empty("No genre mix to show for this slice.")
+        return
+
+    left, right = st.columns(2)
+    with left:
+        plot(charts.genre_revenue_treemap(stats), "ge-tree")
+    with right:
+        plot(charts.roi_by_genre_box(movies), "ge-box")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        plot(charts.genre_bar(stats, "avg_gross", "Average box office by genre", "Avg box office", money=True), "ge-avg")
+    with b2:
+        plot(charts.genre_bar(stats, "avg_rating", "Average IMDb by genre", "IMDb"), "ge-rating")
+
+    st.subheader("Genre ledger")
+    display = stats.copy()
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "genre": "Genre",
+            "movie_count": st.column_config.NumberColumn("Titles", format="%d"),
+            "avg_budget": st.column_config.NumberColumn("Avg budget", format="$%d"),
+            "median_budget": st.column_config.NumberColumn("Median budget", format="$%d"),
+            "avg_gross": st.column_config.NumberColumn("Avg box office", format="$%d"),
+            "median_gross": st.column_config.NumberColumn("Median box office", format="$%d"),
+            "total_gross": st.column_config.NumberColumn("Total box office", format="$%d"),
+            "avg_rating": st.column_config.NumberColumn("Avg IMDb", format="%.2f"),
+            "avg_profit": st.column_config.NumberColumn("Avg profit", format="$%d"),
+            "median_profit": st.column_config.NumberColumn("Median profit", format="$%d"),
+            "avg_roi": st.column_config.NumberColumn("Avg ROI", format="%.1f%%"),
+            "profitable_pct": st.column_config.ProgressColumn("Profitable", min_value=0, max_value=100, format="%.1f%%"),
+        },
     )
-    
-    # Genre filter
-    genres = st.sidebar.multiselect(
-        "Select Genres",
-        options=movies['genre'].unique(),
-        default=movies['genre'].unique()
+
+
+def render_studios(movies: pd.DataFrame) -> None:
+    stats = compute_studio_stats(movies)
+    if stats.empty:
+        render_empty("No studio mix to show for this slice.")
+        return
+
+    left, right = st.columns(2)
+    with left:
+        plot(charts.studio_revenue_bar(stats), "st-bar")
+    with right:
+        plot(charts.studio_volume_vs_yield(stats), "st-scatter")
+
+    st.subheader("Studio ledger")
+    st.dataframe(
+        stats,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "studio": "Studio",
+            "movie_count": st.column_config.NumberColumn("Titles", format="%d"),
+            "avg_budget": st.column_config.NumberColumn("Avg budget", format="$%d"),
+            "total_budget": st.column_config.NumberColumn("Total budget", format="$%d"),
+            "avg_gross": st.column_config.NumberColumn("Avg box office", format="$%d"),
+            "total_gross": st.column_config.NumberColumn("Total box office", format="$%d"),
+            "avg_rating": st.column_config.NumberColumn("Avg IMDb", format="%.2f"),
+            "avg_roi": st.column_config.NumberColumn("Avg ROI", format="%.1f%%"),
+            "profitable_pct": st.column_config.ProgressColumn("Profitable", min_value=0, max_value=100, format="%.1f%%"),
+        },
     )
-    
-    # Budget range filter
-    budget_range = st.sidebar.slider(
-        "Budget Range (Millions)",
-        min_value=0,
-        max_value=int(movies['budget'].max() / 1_000_000),
-        value=(0, int(movies['budget'].max() / 1_000_000)),
-        step=10
+
+
+def render_trends(movies: pd.DataFrame, scatter_cap: int) -> None:
+    working = movies.copy()
+    if "release_year" not in working.columns:
+        working["release_year"] = working["release_date"].dt.year
+
+    yearly = (
+        working.groupby("release_year", observed=True)
+        .agg(titles=("movie_id", "count"), avg_gross=("total_gross", "mean"), avg_rating=("imdb_rating", "mean"))
+        .reset_index()
     )
-    
-    # Apply filters
-    filtered_movies = movies[
-        (movies['release_date'] >= pd.Timestamp(date_range[0])) &
-        (movies['release_date'] <= pd.Timestamp(date_range[1])) &
-        (movies['genre'].isin(genres)) &
-        (movies['budget'] >= budget_range[0] * 1_000_000) &
-        (movies['budget'] <= budget_range[1] * 1_000_000)
+    c1, c2 = st.columns(2)
+    with c1:
+        plot(charts.yearly_line(yearly, "titles", "Titles released per year", "Titles"), "tr-count")
+    with c2:
+        plot(charts.yearly_line(yearly, "avg_gross", "Average box office per year", "Avg box office", money=True), "tr-gross")
+
+    fig, note = charts.rating_over_time(working, max_points=scatter_cap)
+    plot(fig, "tr-ratings")
+    if note:
+        st.caption(note)
+
+
+def render_sales(sales: pd.DataFrame, line_cap: int) -> None:
+    if sales is None or sales.empty:
+        render_empty("No sales rows for the titles in this slice.")
+        return
+
+    series, grain = auto_resample_timeseries(sales, "date", ["tickets_sold", "revenue"], max_points=line_cap)
+    c1, c2 = st.columns(2)
+    with c1:
+        plot(charts.sales_line(series, "tickets_sold", "Ticket volume", "Tickets", grain), "sa-tickets")
+    with c2:
+        plot(charts.sales_line(series, "revenue", "Box office from tickets", "Revenue", grain, money=True), "sa-rev")
+    if grain != "day":
+        st.caption(f"Series auto-rolled to {grain}s because the daily grain exceeded {line_cap:,} points.")
+
+    weekend_source = sales.copy()
+    if "is_weekend" not in weekend_source.columns:
+        weekend_source["is_weekend"] = weekend_source["date"].dt.weekday >= 5
+    weekend = (
+        weekend_source.groupby("is_weekend", observed=True)
+        .agg(tickets_sold=("tickets_sold", "mean"), revenue=("revenue", "mean"))
+        .reset_index()
+    )
+    weekend["day_type"] = weekend["is_weekend"].map({True: "Weekend", False: "Weekday", 1: "Weekend", 0: "Weekday"})
+    w1, w2 = st.columns(2)
+    with w1:
+        plot(charts.weekend_bar(weekend, "tickets_sold", "Avg tickets · weekend vs weekday", "Tickets"), "sa-wk-t")
+    with w2:
+        plot(charts.weekend_bar(weekend, "revenue", "Avg revenue · weekend vs weekday", "Revenue"), "sa-wk-r")
+
+    top = (
+        sales.groupby("movie_title", observed=True)["tickets_sold"]
+        .sum()
+        .nlargest(15)
+        .reset_index()
+    )
+    plot(charts.top_titles_bar(top, "tickets_sold", "movie_title", "Top 15 titles by tickets"), "sa-top")
+
+
+def render_explorer(movies: pd.DataFrame) -> None:
+    st.caption("Full filtered catalog. Sort, search, and export without drawing a chart for every row.")
+    visible_cols = [
+        "title",
+        "genre",
+        "studio",
+        "rating",
+        "release_date",
+        "budget",
+        "total_gross",
+        "profit",
+        "roi",
+        "imdb_rating",
+        "runtime_minutes",
     ]
-    
-    # Key Metrics Row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric(
-            label="Total Movies",
-            value=f"{len(filtered_movies):,}"
-        )
-    
-    with col2:
-        total_gross = filtered_movies['total_gross'].sum()
-        st.metric(
-            label="Total Box Office",
-            value=f"${total_gross/1_000_000_000:.1f}B"
-        )
-    
-    with col3:
-        avg_rating = filtered_movies['imdb_rating'].mean()
-        st.metric(
-            label="Avg IMDb Rating",
-            value=f"{avg_rating:.1f}/10"
-        )
-    
-    with col4:
-        profitable_pct = (len(filtered_movies[filtered_movies['profit'] > 0]) / len(filtered_movies)) * 100
-        st.metric(
-            label="Profitable Movies",
-            value=f"{profitable_pct:.1f}%"
-        )
-    
-    with col5:
-        avg_roi = filtered_movies['roi'].mean()
-        st.metric(
-            label="Average ROI",
-            value=f"{avg_roi:.1f}%"
-        )
-    
-    st.markdown("---")
-    
-    # Create tabs for different analyses
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "🎭 Genre Analysis", "🏢 Studio Performance", "📈 Trends", "🎫 Sales Data"])
-    
-    with tab1:
-        show_overview_tab(filtered_movies)
-    
-    with tab2:
-        show_genre_analysis(filtered_movies, genre_stats)
-    
-    with tab3:
-        show_studio_analysis(filtered_movies, studio_stats)
-    
-    with tab4:
-        show_trends_analysis(filtered_movies, sales)
-    
-    with tab5:
-        show_sales_analysis(sales)
+    present = [c for c in visible_cols if c in movies.columns]
+    st.dataframe(
+        movies[present],
+        hide_index=True,
+        use_container_width=True,
+        height=560,
+        column_config={
+            "title": st.column_config.TextColumn("Title", width="medium"),
+            "genre": "Genre",
+            "studio": "Studio",
+            "rating": "MPAA",
+            "release_date": st.column_config.DateColumn("Released"),
+            "budget": st.column_config.NumberColumn("Budget", format="$%d"),
+            "total_gross": st.column_config.NumberColumn("Box office", format="$%d"),
+            "profit": st.column_config.NumberColumn("Profit", format="$%d"),
+            "roi": st.column_config.NumberColumn("ROI", format="%.1f%%"),
+            "imdb_rating": st.column_config.ProgressColumn("IMDb", min_value=0, max_value=10, format="%.1f"),
+            "runtime_minutes": st.column_config.NumberColumn("Runtime", format="%d min"),
+        },
+    )
+    csv = movies[present].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download this slice as CSV",
+        data=csv,
+        file_name="box_office_slice.csv",
+        mime="text/csv",
+        use_container_width=False,
+    )
 
-def show_overview_tab(movies):
-    """Overview tab with key visualizations"""
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Budget vs Gross scatter plot
-        fig = px.scatter(
-            movies,
-            x='budget',
-            y='total_gross',
-            color='genre',
-            size='imdb_rating',
-            hover_data=['title', 'release_year'],
-            title='Budget vs Total Gross Revenue'
-        )
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # ROI distribution
-        fig = px.histogram(
-            movies,
-            x='roi',
-            nbins=30,
-            title='Return on Investment Distribution'
-        )
-        fig.add_vline(x=movies['roi'].median(), line_dash="dash", 
-                     annotation_text=f"Median: {movies['roi'].median():.1f}%")
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Top performers table
-    st.subheader("🏆 Top Performing Movies")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Top 10 by Total Gross**")
-        top_gross = movies.nlargest(10, 'total_gross')[['title', 'genre', 'total_gross', 'imdb_rating']]
-        top_gross['total_gross'] = top_gross['total_gross'].apply(lambda x: f"${x/1_000_000:.1f}M")
-        st.dataframe(top_gross, hide_index=True)
-    
-    with col2:
-        st.write("**Top 10 by ROI**")
-        top_roi = movies.nlargest(10, 'roi')[['title', 'genre', 'roi', 'budget']]
-        top_roi['roi'] = top_roi['roi'].apply(lambda x: f"{x:.1f}%")
-        top_roi['budget'] = top_roi['budget'].apply(lambda x: f"${x/1_000_000:.1f}M")
-        st.dataframe(top_roi, hide_index=True)
 
-def show_genre_analysis(movies, genre_stats):
-    """Genre analysis tab"""
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Genre distribution
-        genre_counts = movies['genre'].value_counts()
-        fig = px.pie(
-            values=genre_counts.values,
-            names=genre_counts.index,
-            title='Movie Distribution by Genre'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Average revenue by genre
-        genre_performance = movies.groupby('genre').agg({
-            'total_gross': 'mean',
-            'imdb_rating': 'mean'
-        }).reset_index()
-        
-        fig = px.bar(
-            genre_performance,
-            x='genre',
-            y='total_gross',
-            title='Average Revenue by Genre'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Detailed genre statistics
-    st.subheader("📊 Detailed Genre Statistics")
-    st.dataframe(genre_stats, hide_index=True)
+def main() -> None:
+    st.markdown(APP_CSS, unsafe_allow_html=True)
 
-def show_studio_analysis(movies, studio_stats):
-    """Studio analysis tab"""
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Top studios by total revenue
-        studio_revenue = movies.groupby('studio')['total_gross'].sum().nlargest(15)
-        fig = px.bar(
-            x=studio_revenue.values,
-            y=studio_revenue.index,
-            orientation='h',
-            title='Top 15 Studios by Total Revenue'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Studio performance scatter
-        studio_performance = movies.groupby('studio').agg({
-            'movie_id': 'count',
-            'total_gross': 'mean'
-        }).reset_index()
-        
-        fig = px.scatter(
-            studio_performance,
-            x='movie_id',
-            y='total_gross',
-            size='total_gross',
-            hover_data=['studio'],
-            title='Studio Performance: Movies Count vs Average Revenue'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Studio statistics table
-    st.subheader("🏢 Studio Performance Statistics")
-    st.dataframe(studio_stats, hide_index=True)
+    movies, sales = load_catalog()
+    if movies is None or movies.empty:
+        st.error("Processed data files were not found. Run `python3 scripts/generate_data.py` and `python3 scripts/data_processing.py` from the `scripts` directory.")
+        st.stop()
 
-def show_trends_analysis(movies, sales):
-    """Trends analysis tab"""
-    
-    # Extract year from release date
-    movies['release_year'] = movies['release_date'].dt.year
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Movies released per year
-        release_trends = movies.groupby('release_year').agg({
-            'movie_id': 'count',
-            'total_gross': 'mean'
-        }).reset_index()
-        
-        fig = px.line(
-            release_trends,
-            x='release_year',
-            y='movie_id',
-            title='Number of Movies Released per Year',
-            markers=True
+    if "filter_epoch" not in st.session_state:
+        st.session_state.filter_epoch = 0
+    epoch = st.session_state.filter_epoch
+
+    min_date = pd.Timestamp(movies["release_date"].min()).date()
+    max_date = pd.Timestamp(movies["release_date"].max()).date()
+    genres_all = unique_sorted(movies["genre"])
+    studios_all = unique_sorted(movies["studio"])
+    ratings_all = unique_sorted(movies["rating"])
+    budget_hi = int(max(movies["budget"].max() / 1_000_000, 1))
+    rating_lo = float(movies["imdb_rating"].min())
+    rating_hi = float(movies["imdb_rating"].max())
+
+    with st.sidebar:
+        st.markdown("### Workspace")
+        st.caption("Filters apply to every view. Only the active view is computed.")
+        if st.button("Reset filters", use_container_width=True, key="reset-filters"):
+            st.session_state.filter_epoch += 1
+            st.rerun()
+
+        search = st.text_input("Search titles", placeholder="Partial title…", key=f"search-{epoch}")
+        date_value = st.date_input(
+            "Release window",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key=f"dates-{epoch}",
         )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Average gross per year
-        fig = px.line(
-            release_trends,
-            x='release_year',
-            y='total_gross',
-            title='Average Gross Revenue per Year',
-            markers=True
+        selected_genres = st.multiselect("Genres", options=genres_all, default=genres_all, key=f"genres-{epoch}")
+
+        if len(studios_all) > STUDIO_COMPACT_THRESHOLD:
+            selected_studios = st.multiselect(
+                "Studios",
+                options=studios_all,
+                default=[],
+                key=f"studios-{epoch}",
+                help="Leave empty to include every studio. Defaults stay empty once the catalog is large.",
+            )
+        else:
+            selected_studios = st.multiselect(
+                "Studios", options=studios_all, default=studios_all, key=f"studios-{epoch}"
+            )
+
+        selected_ratings = st.multiselect("MPAA rating", options=ratings_all, default=ratings_all, key=f"mpaa-{epoch}")
+        budget_range = st.slider(
+            "Budget (USD millions)",
+            min_value=0,
+            max_value=budget_hi,
+            value=(0, budget_hi),
+            step=max(1, budget_hi // 50),
+            key=f"budget-{epoch}",
         )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Budget vs ratings over time
-    fig = px.scatter(
+        imdb_range = st.slider(
+            "IMDb rating",
+            min_value=0.0,
+            max_value=10.0,
+            value=(max(0.0, round(rating_lo, 1)), min(10.0, round(rating_hi, 1))),
+            step=0.1,
+            key=f"imdb-{epoch}",
+        )
+
+        st.markdown("#### Chart fidelity")
+        fidelity = st.radio(
+            "Chart fidelity",
+            options=("Auto", "Performance", "High fidelity"),
+            index=0,
+            label_visibility="collapsed",
+            key=f"fidelity-{epoch}",
+            help="Performance caps scatter traces and rolls up long time series. High fidelity raises those caps for smaller slices.",
+        )
+
+        mem = frame_memory_bytes(movies) + frame_memory_bytes(sales)
+        st.markdown("#### Catalog")
+        st.caption(
+            f"{len(movies):,} titles · {0 if sales is None else len(sales):,} sales rows · {memory_label(mem)} in memory"
+        )
+        st.caption("Scatter traces downsample above 4,000 points. Time series roll up past 1,500 grains.")
+
+    date_start, date_end = normalize_date_range(date_value, min_date, max_date)
+    # Large catalogs: empty studio widget means "all" so we never default-select hundreds of values.
+    studio_filter = selected_studios
+    if len(studios_all) > STUDIO_COMPACT_THRESHOLD and not selected_studios:
+        studio_filter = None
+
+    filter_kwargs = dict(
+        date_start=date_start,
+        date_end=date_end,
+        genres=selected_genres,
+        studios=studio_filter,
+        ratings=selected_ratings,
+        budget_min=budget_range[0] * 1_000_000,
+        budget_max=budget_range[1] * 1_000_000,
+        imdb_min=imdb_range[0],
+        imdb_max=imdb_range[1],
+        search=search,
+    )
+    filtered = filter_movies(movies, **filter_kwargs)
+
+    prev_start, prev_end = previous_period_bounds(date_start, date_end)
+    previous = filter_movies(
         movies,
-        x='release_year',
-        y='imdb_rating',
-        size='budget',
-        color='genre',
-        title='Movie Ratings vs Release Year (Size = Budget)'
+        **{**filter_kwargs, "date_start": prev_start, "date_end": prev_end},
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-def show_sales_analysis(sales):
-    """Sales analysis tab"""
-    
-    # Daily sales trends
-    daily_sales = sales.groupby('date').agg({
-        'tickets_sold': 'sum',
-        'revenue': 'sum'
-    }).reset_index()
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.line(
-            daily_sales,
-            x='date',
-            y='tickets_sold',
-            title='Daily Ticket Sales Over Time'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.line(
-            daily_sales,
-            x='date',
-            y='revenue',
-            title='Daily Revenue Over Time'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Weekend vs weekday analysis
-    weekend_analysis = sales.groupby('is_weekend').agg({
-        'tickets_sold': 'mean',
-        'revenue': 'mean'
-    }).reset_index()
-    weekend_analysis['day_type'] = weekend_analysis['is_weekend'].map({True: 'Weekend', False: 'Weekday'})
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.bar(
-            weekend_analysis,
-            x='day_type',
-            y='tickets_sold',
-            title='Average Tickets Sold: Weekend vs Weekday'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.bar(
-            weekend_analysis,
-            x='day_type',
-            y='revenue',
-            title='Average Revenue: Weekend vs Weekday'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Top movies by sales
-    st.subheader("🎬 Top Movies by Ticket Sales")
-    top_sales = sales.groupby('movie_title')['tickets_sold'].sum().nlargest(15).reset_index()
-    
-    fig = px.bar(
-        top_sales,
-        x='tickets_sold',
-        y='movie_title',
-        orientation='h',
-        title='Top 15 Movies by Total Ticket Sales'
+    current_kpis = compute_overview_metrics(filtered)
+    previous_kpis = compute_overview_metrics(previous)
+
+    if fidelity == "Performance":
+        scatter_cap, line_cap = MAX_SCATTER_POINTS_FAST, 750
+    elif fidelity == "High fidelity":
+        scatter_cap, line_cap = 12_000, 5_000
+    else:
+        scatter_cap, line_cap = MAX_SCATTER_POINTS, MAX_LINE_POINTS
+
+    st.markdown('<div class="hero-kicker">Production analytics</div>', unsafe_allow_html=True)
+    st.markdown('<p class="hero-title">Box Office Intelligence</p>', unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="hero-sub">{fmt_number(current_kpis["total_movies"])} titles in view · '
+        f'{date_start.date()} → {date_end.date()} · deltas vs the prior window of equal length</p>',
+        unsafe_allow_html=True,
     )
-    st.plotly_chart(fig, use_container_width=True)
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Titles", fmt_number(current_kpis["total_movies"]), delta=delta_pct(current_kpis["total_movies"], previous_kpis["total_movies"]))
+    k2.metric(
+        "Box office",
+        fmt_money(current_kpis["total_revenue"]),
+        delta=delta_pct(current_kpis["total_revenue"], previous_kpis["total_revenue"]),
+        help="Sum of domestic + international gross in the current slice.",
+    )
+    k3.metric("Avg IMDb", fmt_rating(current_kpis["avg_rating"]), delta=delta_pct(current_kpis["avg_rating"], previous_kpis["avg_rating"]))
+    k4.metric(
+        "Profitable",
+        fmt_pct(current_kpis["profitable_percentage"]),
+        delta=delta_pct(current_kpis["profitable_percentage"], previous_kpis["profitable_percentage"]),
+        help="Share of titles where box office exceeds production budget.",
+    )
+    k5.metric("Avg ROI", fmt_pct(current_kpis["avg_roi"]), delta=delta_pct(current_kpis["avg_roi"], previous_kpis["avg_roi"]))
+
+    view = st.radio("View", options=VIEWS, horizontal=True, label_visibility="collapsed", key="workspace-view")
+
+    if filtered.empty:
+        render_empty("No titles match the current filters. Reset the sidebar or widen the release window.")
+    elif view == "Overview":
+        render_overview(filtered, scatter_cap)
+    elif view == "Genres":
+        render_genres(filtered)
+    elif view == "Studios":
+        render_studios(filtered)
+    elif view == "Trends":
+        render_trends(filtered, scatter_cap)
+    elif view == "Sales":
+        sliced_sales = filter_sales(sales, filtered["movie_id"])
+        render_sales(sliced_sales, line_cap)
+    else:
+        render_explorer(filtered)
+
+    st.markdown(
+        f'<p class="footer-meta">{len(movies):,} titles loaded · '
+        f'{0 if sales is None else len(sales):,} sales facts · '
+        f'{memory_label(frame_memory_bytes(movies) + frame_memory_bytes(sales))} resident · '
+        f'scatter cap {scatter_cap:,} · series cap {line_cap:,} points · '
+        f'WebGL traces · live aggregates (not static CSVs)</p>',
+        unsafe_allow_html=True,
+    )
+
 
 if __name__ == "__main__":
     main()

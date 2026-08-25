@@ -113,8 +113,9 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit — keep theme/config, never commit secrets
+.streamlit/secrets.toml
+.streamlit/secrets.toml.local
 
 # Temporary files
 *.tmp

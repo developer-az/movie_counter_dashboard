@@ -28,10 +28,10 @@ This project transforms movie industry data into actionable insights through adv
 - **ROI Calculations**: Financial performance and profitability analysis
 
 ### Interactive Dashboard
-- **Real-time Filtering**: Dynamic data exploration with multiple filter options
-- **Multiple Views**: Overview, Genre Analysis, Studio Performance, Trends, and Sales
-- **Professional Visualizations**: Plotly-powered interactive charts and graphs
-- **Key Performance Indicators**: At-a-glance metrics and insights
+- **Production workspace**: Dark professional theme, KPI deltas vs the prior window, and a single active view so unused charts are not computed
+- **Filters that scale**: Title search, release window, genre / studio / MPAA, budget and IMDb sliders, plus a compact studio picker when the catalog is large
+- **Large-data charting**: WebGL scatter traces, stratified/stride sampling above 4,000 points, and automatic day→week→month rollups for long sales series
+- **Live ledgers**: Genre and studio tables are aggregated from the current slice (not static CSVs), with an Explorer view for sort / scan / CSV export
 
 ### Technical Features
 - **Automated Data Pipeline**: Scripts for data generation and processing
@@ -312,31 +312,31 @@ After installation, verify everything works:
 
 ## 📈 Dashboard Features
 
-### Overview Tab
-- **Key Metrics**: Total movies, box office revenue, ratings, profitability
-- **Scatter Plot**: Budget vs Revenue with genre coloring
-- **ROI Distribution**: Histogram of return on investment
-- **Top Performers**: Tables of highest-grossing and most profitable movies
+The dashboard is a single-page workspace (`dashboard/streamlit_app.py`). Filters in the sidebar apply everywhere; a horizontal view switcher renders **only the active view**.
 
-### Genre Analysis Tab
-- **Distribution**: Pie chart of movies by genre
-- **Performance**: Average revenue and ratings by genre
-- **Detailed Metrics**: Comprehensive genre performance table
+### Overview
+- **KPI row**: Titles, box office, IMDb, profitable share, average ROI, with deltas vs the previous window of equal length
+- **Budget vs box office**: WebGL scatter, sampled when the slice is large
+- **ROI distribution** with a median marker
+- **Lead titles**: Top box office and top ROI tables
 
-### Studio Analysis Tab
-- **Studio Rankings**: Top studios by total revenue
-- **Performance Scatter**: Movies count vs average revenue
-- **Studio Metrics**: Detailed performance statistics
+### Genres
+- **Treemap** of box office share, **ROI box plot**, average yield and ratings
+- **Genre ledger** computed from the filtered catalog
 
-### Trends Analysis Tab
-- **Release Patterns**: Movies released per year
-- **Revenue Trends**: Average revenue over time
-- **Rating Evolution**: IMDb ratings vs release year with budget sizing
+### Studios
+- Ranked box office bars, volume vs average yield, and a studio ledger
 
-### Sales Analysis Tab
-- **Daily Sales**: Time series of ticket sales and revenue
-- **Weekend Effect**: Comparison of weekend vs weekday performance
-- **Top Movies**: Ranking by total ticket sales
+### Trends
+- Titles and average box office by year, plus ratings over time (size = budget)
+
+### Sales
+- Ticket and revenue series that auto-roll from day to week/month/quarter
+- Weekend vs weekday effect
+- Restricted to titles in the current movie slice
+
+### Explorer
+- Sortable full table of the slice, IMDb progress column, CSV download
 
 ## 💻 Terminal Interface Features (New!)
 

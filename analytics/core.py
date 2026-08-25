@@ -5,12 +5,398 @@ Shared analytics functions that can be used by both dashboard and terminal inter
 Provides consistent data analysis capabilities across different output formats.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
+from __future__ import annotations
+
 import json
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "processed"
+
+CATEGORICAL_COLUMNS = {
+    "genre",
+    "studio",
+    "rating",
+    "budget_category",
+    "performance",
+    "day_of_week",
+    "movie_title",
+}
+
+# Chart budgets: keep traces GPU-friendly even when the source table is huge.
+MAX_SCATTER_POINTS = 4_000
+MAX_SCATTER_POINTS_FAST = 2_000
+MAX_LINE_POINTS = 1_500
+LARGE_FRAME_ROWS = 250_000
+
+DateLike = Union[str, datetime, pd.Timestamp]
+
+
+def resolve_data_path(data_path: Union[str, Path] = "data/processed") -> Path:
+    """
+    Resolve the processed-data directory regardless of the current working directory.
+
+    Streamlit, tests, and the CLI each start from different folders. Prefer an
+    explicit path that already contains movies_processed.csv, then search common
+    project-relative locations.
+    """
+    requested = Path(data_path)
+    marker = "movies_processed.csv"
+
+    candidates = [requested]
+    if not requested.is_absolute():
+        candidates.extend(
+            [
+                Path.cwd() / requested,
+                PROJECT_ROOT / requested,
+                PROJECT_ROOT / "data" / "processed",
+                Path.cwd() / "data" / "processed",
+                Path.cwd().parent / "data" / "processed",
+            ]
+        )
+
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (candidate / marker).exists():
+            return candidate.resolve()
+
+    return requested
+
+
+def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reduce memory footprint without changing analytics results.
+
+    Categorical encoding of repeated strings and downcasting of integer id/count
+    columns keeps large extracts in RAM for interactive filtering.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    for column in out.columns:
+        series = out[column]
+        if column in CATEGORICAL_COLUMNS and not isinstance(series.dtype, pd.CategoricalDtype):
+            out[column] = series.astype("category")
+        elif pd.api.types.is_bool_dtype(series) or str(series.dtype) == "boolean":
+            continue
+        elif pd.api.types.is_integer_dtype(series):
+            out[column] = pd.to_numeric(series, downcast="integer")
+        elif column == "imdb_rating" and pd.api.types.is_float_dtype(series):
+            out[column] = series.astype("float32")
+    return out
+
+
+def frame_memory_bytes(df: Optional[pd.DataFrame]) -> int:
+    """Return deep memory usage for a frame, or 0 when missing."""
+    if df is None or df.empty:
+        return 0
+    return int(df.memory_usage(deep=True).sum())
+
+
+def normalize_date_range(
+    value: Any,
+    fallback_min: DateLike,
+    fallback_max: DateLike,
+) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Coerce Streamlit date_input output (1 or 2 values) into a closed timestamp range."""
+    start = pd.Timestamp(fallback_min)
+    end = pd.Timestamp(fallback_max)
+
+    if value is None:
+        return start.normalize(), end.normalize()
+
+    if isinstance(value, (list, tuple)):
+        if len(value) >= 2 and value[0] is not None and value[1] is not None:
+            start, end = pd.Timestamp(value[0]), pd.Timestamp(value[1])
+        elif len(value) == 1 and value[0] is not None:
+            start = end = pd.Timestamp(value[0])
+    else:
+        start = end = pd.Timestamp(value)
+
+    if start > end:
+        start, end = end, start
+    return start.normalize(), end.normalize()
+
+
+def previous_period_bounds(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the equally long window immediately before ``start`` (for KPI deltas)."""
+    start = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+    span_days = max((end.normalize() - start.normalize()).days, 0)
+    prev_end = start.normalize() - pd.Timedelta(days=1)
+    prev_start = prev_end - pd.Timedelta(days=span_days)
+    return prev_start, prev_end
+
+
+def filter_movies(
+    movies: pd.DataFrame,
+    *,
+    date_start: Optional[DateLike] = None,
+    date_end: Optional[DateLike] = None,
+    genres: Optional[Sequence[str]] = None,
+    studios: Optional[Sequence[str]] = None,
+    ratings: Optional[Sequence[str]] = None,
+    budget_min: Optional[float] = None,
+    budget_max: Optional[float] = None,
+    imdb_min: Optional[float] = None,
+    imdb_max: Optional[float] = None,
+    search: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Vectorized filter over the movies frame.
+
+    Empty sequences mean "no extra restriction" for the corresponding dimension,
+    which is the production-friendly default when a catalog has hundreds of studios.
+    """
+    if movies is None or movies.empty:
+        return movies if movies is not None else pd.DataFrame()
+
+    mask = pd.Series(True, index=movies.index)
+
+    if date_start is not None:
+        mask &= movies["release_date"] >= pd.Timestamp(date_start)
+    if date_end is not None:
+        mask &= movies["release_date"] <= (
+            pd.Timestamp(date_end) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        )
+    # None = no restriction; empty sequence = match nothing (cleared multiselect).
+    if genres is not None:
+        mask &= movies["genre"].isin(list(genres))
+    if studios is not None:
+        mask &= movies["studio"].isin(list(studios))
+    if ratings is not None:
+        mask &= movies["rating"].isin(list(ratings))
+    if budget_min is not None:
+        mask &= movies["budget"] >= budget_min
+    if budget_max is not None:
+        mask &= movies["budget"] <= budget_max
+    if imdb_min is not None:
+        mask &= movies["imdb_rating"] >= imdb_min
+    if imdb_max is not None:
+        mask &= movies["imdb_rating"] <= imdb_max
+    if search:
+        needle = str(search).strip()
+        if needle:
+            mask &= movies["title"].astype(str).str.contains(
+                needle, case=False, na=False, regex=False
+            )
+
+    return movies.loc[mask]
+
+
+def filter_sales(sales: pd.DataFrame, movie_ids: Optional[Iterable[Any]] = None) -> pd.DataFrame:
+    """Restrict sales rows to the currently selected titles."""
+    if sales is None or sales.empty or movie_ids is None:
+        return sales if sales is not None else pd.DataFrame()
+    ids = pd.unique(pd.Index(list(movie_ids)))
+    if len(ids) == 0:
+        return sales.iloc[0:0]
+    return sales.loc[sales["movie_id"].isin(ids)]
+
+
+def compute_overview_metrics(movies: Optional[pd.DataFrame]) -> Dict[str, Any]:
+    """Empty-safe KPI payload used by the dashboard, CLI, and tests."""
+    empty = {
+        "total_movies": 0,
+        "total_revenue": 0.0,
+        "avg_rating": None,
+        "profitable_movies": 0,
+        "profitable_percentage": 0.0,
+        "avg_roi": None,
+        "median_roi": None,
+        "total_budget": 0.0,
+        "total_profit": 0.0,
+        "genres_count": 0,
+        "studios_count": 0,
+        "date_range": {"start": None, "end": None},
+    }
+    if movies is None or movies.empty:
+        return empty
+
+    profitable = movies["profit"] > 0
+    return {
+        "total_movies": int(len(movies)),
+        "total_revenue": float(movies["total_gross"].sum()),
+        "avg_rating": float(movies["imdb_rating"].mean()),
+        "profitable_movies": int(profitable.sum()),
+        "profitable_percentage": float(profitable.mean() * 100),
+        "avg_roi": float(movies["roi"].mean()),
+        "median_roi": float(movies["roi"].median()),
+        "total_budget": float(movies["budget"].sum()),
+        "total_profit": float(movies["profit"].sum()),
+        "genres_count": int(movies["genre"].nunique()),
+        "studios_count": int(movies["studio"].nunique()),
+        "date_range": {
+            "start": movies["release_date"].min(),
+            "end": movies["release_date"].max(),
+        },
+    }
+
+
+def compute_genre_stats(movies: pd.DataFrame) -> pd.DataFrame:
+    """Live genre aggregates from the filtered catalog (not the static CSV)."""
+    columns = [
+        "genre",
+        "movie_count",
+        "avg_budget",
+        "median_budget",
+        "avg_gross",
+        "median_gross",
+        "total_gross",
+        "avg_rating",
+        "avg_profit",
+        "median_profit",
+        "avg_roi",
+        "profitable_pct",
+    ]
+    if movies is None or movies.empty:
+        return pd.DataFrame(columns=columns)
+
+    stats = (
+        movies.groupby("genre", observed=True)
+        .agg(
+            movie_count=("movie_id", "count"),
+            avg_budget=("budget", "mean"),
+            median_budget=("budget", "median"),
+            avg_gross=("total_gross", "mean"),
+            median_gross=("total_gross", "median"),
+            total_gross=("total_gross", "sum"),
+            avg_rating=("imdb_rating", "mean"),
+            avg_profit=("profit", "mean"),
+            median_profit=("profit", "median"),
+            avg_roi=("roi", "mean"),
+            profitable_pct=("profit", lambda s: float((s > 0).mean() * 100)),
+        )
+        .reset_index()
+        .sort_values("total_gross", ascending=False)
+    )
+    return stats.round(2)
+
+
+def compute_studio_stats(movies: pd.DataFrame) -> pd.DataFrame:
+    """Live studio aggregates from the filtered catalog."""
+    columns = [
+        "studio",
+        "movie_count",
+        "avg_budget",
+        "total_budget",
+        "avg_gross",
+        "total_gross",
+        "avg_rating",
+        "avg_roi",
+        "profitable_pct",
+    ]
+    if movies is None or movies.empty:
+        return pd.DataFrame(columns=columns)
+
+    stats = (
+        movies.groupby("studio", observed=True)
+        .agg(
+            movie_count=("movie_id", "count"),
+            avg_budget=("budget", "mean"),
+            total_budget=("budget", "sum"),
+            avg_gross=("total_gross", "mean"),
+            total_gross=("total_gross", "sum"),
+            avg_rating=("imdb_rating", "mean"),
+            avg_roi=("roi", "mean"),
+            profitable_pct=("profit", lambda s: float((s > 0).mean() * 100)),
+        )
+        .reset_index()
+        .sort_values("total_gross", ascending=False)
+    )
+    return stats.round(2)
+
+
+def sample_for_chart(
+    df: pd.DataFrame,
+    max_points: int = MAX_SCATTER_POINTS,
+    by: Optional[str] = None,
+    random_state: int = 42,
+) -> Tuple[pd.DataFrame, bool, int]:
+    """
+    Downsample a frame for scatter/detail charts.
+
+    Returns (frame, was_sampled, original_len). Uses stride sampling above
+    LARGE_FRAME_ROWS so we never shuffle a million-row table just to draw dots.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame(), False, 0
+
+    n = len(df)
+    cap = max(int(max_points), 1)
+    if n <= cap:
+        return df, False, n
+
+    if n > LARGE_FRAME_ROWS or by is None or by not in df.columns:
+        step = max(1, n // cap)
+        sampled = df.iloc[::step].head(cap)
+        return sampled, True, n
+
+    frac = min(1.0, cap / n)
+    sampled = df.groupby(by, observed=True, group_keys=False).sample(
+        frac=frac, random_state=random_state
+    )
+    if len(sampled) > cap:
+        sampled = sampled.sample(n=cap, random_state=random_state)
+    return sampled, True, n
+
+
+def auto_resample_timeseries(
+    df: pd.DataFrame,
+    date_col: str,
+    value_cols: Sequence[str],
+    max_points: int = MAX_LINE_POINTS,
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Aggregate a time series to day/week/month/quarter so line charts stay readable.
+
+    Returns (aggregated_frame, grain_label).
+    """
+    if df is None or df.empty or date_col not in df.columns:
+        return pd.DataFrame(columns=[date_col, *value_cols]), "day"
+
+    working = df[[date_col, *list(value_cols)]].copy()
+    working[date_col] = pd.to_datetime(working[date_col])
+    daily = working.groupby(working[date_col].dt.normalize(), observed=True)[list(value_cols)].sum()
+    daily.index.name = date_col
+    n = len(daily)
+    if n <= max_points:
+        return daily.reset_index(), "day"
+
+    span_days = max((daily.index.max() - daily.index.min()).days, 1)
+    if span_days / 7 <= max_points:
+        freq, grain = "W", "week"
+    elif span_days / 30 <= max_points:
+        freq, grain = "MS", "month"
+    else:
+        freq, grain = "QS", "quarter"
+
+    resampled = daily.resample(freq).sum().reset_index()
+    return resampled, grain
+
+
+def unique_sorted(series: pd.Series) -> List[Any]:
+    """Stable unique values for filter widgets, including categoricals."""
+    if series is None or series.empty:
+        return []
+    values = pd.Series(series.dropna().unique())
+    try:
+        return sorted(values.tolist())
+    except TypeError:
+        return values.tolist()
 
 
 class MovieAnalytics:
@@ -28,7 +414,7 @@ class MovieAnalytics:
         Args:
             data_path: Path to processed data files
         """
-        self.data_path = Path(data_path)
+        self.data_path = resolve_data_path(data_path)
         self._movies = None
         self._sales = None
         self._genre_stats = None
@@ -43,16 +429,20 @@ class MovieAnalytics:
             bool: True if all data loaded successfully, False otherwise
         """
         try:
-            self._movies = pd.read_csv(self.data_path / 'movies_processed.csv')
-            self._sales = pd.read_csv(self.data_path / 'sales_processed.csv')
-            self._genre_stats = pd.read_csv(self.data_path / 'genre_stats.csv')
-            self._studio_stats = pd.read_csv(self.data_path / 'studio_stats.csv')
-            self._monthly_sales = pd.read_csv(self.data_path / 'monthly_sales.csv')
-            
-            # Convert date columns
-            self._movies['release_date'] = pd.to_datetime(self._movies['release_date'])
-            self._sales['date'] = pd.to_datetime(self._sales['date'])
-            
+            self.data_path = resolve_data_path(self.data_path)
+            self._movies = optimize_dtypes(
+                pd.read_csv(self.data_path / "movies_processed.csv", parse_dates=["release_date"])
+            )
+            self._sales = optimize_dtypes(
+                pd.read_csv(self.data_path / "sales_processed.csv", parse_dates=["date"])
+            )
+            if "is_weekend" in self._sales.columns and self._sales["is_weekend"].dtype == object:
+                self._sales["is_weekend"] = self._sales["is_weekend"].map(
+                    {"True": True, "False": False, True: True, False: False}
+                ).astype("boolean")
+            self._genre_stats = pd.read_csv(self.data_path / "genre_stats.csv")
+            self._studio_stats = pd.read_csv(self.data_path / "studio_stats.csv")
+            self._monthly_sales = pd.read_csv(self.data_path / "monthly_sales.csv")
             return True
         except Exception as e:
             print(f"Error loading data: {e}")
@@ -67,28 +457,7 @@ class MovieAnalytics:
         """
         if self._movies is None:
             return {}
-        
-        total_movies = len(self._movies)
-        total_revenue = self._movies['total_gross'].sum()
-        avg_rating = self._movies['imdb_rating'].mean()
-        profitable_movies = len(self._movies[self._movies['profit'] > 0])
-        profitable_pct = (profitable_movies / total_movies) * 100
-        avg_roi = self._movies['roi'].mean()
-        
-        return {
-            'total_movies': total_movies,
-            'total_revenue': total_revenue,
-            'avg_rating': avg_rating,
-            'profitable_movies': profitable_movies,
-            'profitable_percentage': profitable_pct,
-            'avg_roi': avg_roi,
-            'genres_count': self._movies['genre'].nunique(),
-            'studios_count': self._movies['studio'].nunique(),
-            'date_range': {
-                'start': self._movies['release_date'].min(),
-                'end': self._movies['release_date'].max()
-            }
-        }
+        return compute_overview_metrics(self._movies)
     
     def get_genre_analysis(self) -> Dict[str, Any]:
         """
