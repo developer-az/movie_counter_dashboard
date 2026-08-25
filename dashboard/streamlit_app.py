@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 
+import inspect
 import pandas as pd
 import streamlit as st
 
@@ -45,6 +46,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def _width_kwargs(fn, stretch: bool = True) -> dict:
+    """Streamlit 1.49+ uses width=; older builds still want use_container_width."""
+    try:
+        if "width" in inspect.signature(fn).parameters:
+            return {"width": "stretch" if stretch else "content"}
+    except (TypeError, ValueError):
+        pass
+    return {"use_container_width": stretch}
 
 VIEWS = ("Overview", "Genres", "Studios", "Trends", "Sales", "Explorer")
 STUDIO_COMPACT_THRESHOLD = 40
@@ -190,7 +201,7 @@ def render_empty(message: str) -> None:
 
 
 def plot(fig, key: str) -> None:
-    st.plotly_chart(fig, use_container_width=True, config=charts.PLOT_CONFIG, key=key)
+    st.plotly_chart(fig, config=charts.PLOT_CONFIG, key=key, **_width_kwargs(st.plotly_chart))
 
 
 def render_overview(movies: pd.DataFrame, scatter_cap: int) -> None:
@@ -213,7 +224,7 @@ def render_overview(movies: pd.DataFrame, scatter_cap: int) -> None:
         st.dataframe(
             top_gross,
             hide_index=True,
-            use_container_width=True,
+            **_width_kwargs(st.dataframe),
             column_config={
                 "title": st.column_config.TextColumn("Title"),
                 "genre": "Genre",
@@ -227,7 +238,7 @@ def render_overview(movies: pd.DataFrame, scatter_cap: int) -> None:
         st.dataframe(
             top_roi,
             hide_index=True,
-            use_container_width=True,
+            **_width_kwargs(st.dataframe),
             column_config={
                 "title": st.column_config.TextColumn("Title"),
                 "genre": "Genre",
@@ -270,7 +281,7 @@ def render_genres(movies: pd.DataFrame) -> None:
     st.dataframe(
         display,
         hide_index=True,
-        use_container_width=True,
+        **_width_kwargs(st.dataframe),
         column_config={
             "genre": "Genre",
             "movie_count": st.column_config.NumberColumn("Titles", format="%d"),
@@ -304,7 +315,7 @@ def render_studios(movies: pd.DataFrame) -> None:
     st.dataframe(
         stats,
         hide_index=True,
-        use_container_width=True,
+        **_width_kwargs(st.dataframe),
         column_config={
             "studio": "Studio",
             "movie_count": st.column_config.NumberColumn("Titles", format="%d"),
@@ -398,7 +409,7 @@ def render_explorer(movies: pd.DataFrame) -> None:
     st.dataframe(
         movies[present],
         hide_index=True,
-        use_container_width=True,
+        **_width_kwargs(st.dataframe),
         height=560,
         column_config={
             "title": st.column_config.TextColumn("Title", width="medium"),
@@ -420,7 +431,7 @@ def render_explorer(movies: pd.DataFrame) -> None:
         data=csv,
         file_name="box_office_slice.csv",
         mime="text/csv",
-        use_container_width=False,
+        **_width_kwargs(st.download_button, stretch=False),
     )
 
 
@@ -448,7 +459,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### Workspace")
         st.caption("Filters apply to every view. Only the active view is computed.")
-        if st.button("Reset filters", use_container_width=True, key="reset-filters"):
+        if st.button("Reset filters", key="reset-filters", **_width_kwargs(st.button)):
             st.session_state.filter_epoch += 1
             st.rerun()
 
